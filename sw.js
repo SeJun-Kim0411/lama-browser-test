@@ -10,7 +10,7 @@ self.addEventListener('fetch', e => {
     if (res.status === 0) return res;
     const h = new Headers(res.headers);
     h.set('Cross-Origin-Opener-Policy', 'same-origin');
-    h.set('Cross-Origin-Embedder-Policy', 'credentialless');
+    h.set('Cross-Origin-Embedder-Policy', 'require-corp');   // 사파리는 credentialless 를 지원하지 않음
     h.set('Cross-Origin-Resource-Policy', 'cross-origin');
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
   }));

@@ -24,8 +24,12 @@ textarea{width:100%;height:110px;font:12px monospace;background:var(--bg);color:
 </head>
 <body>
 <h1>브라우저 지우기 시험 (LaMa)</h1>
-<p>이 기기에서 AI 채우기(LaMa, 37MB)가 얼마나 빠른지 재요. 처음 한 번 모델을 받아요(와이파이 권장). 사진은 기기 밖으로 보내지 않아요.</p>
+<p>이 기기에서 AI 채우기(LaMa)가 얼마나 빠른지 재요. 처음 한 번 모델을 받아요(와이파이 권장). 사진은 기기 밖으로 보내지 않아요.</p>
 <div class="card">
+  <label style="display:block;margin-bottom:8px">모델 <select id="model" style="font:inherit;padding:6px;border-radius:8px">
+    <option value="dilated">브라우저 그래픽용 LaMa (174MB)</option>
+    <option value="int8">줄인 LaMa (37MB)</option>
+  </select></label>
   <button class="primary" id="bGpu">① 그래픽(WebGPU)로 시험</button>
   <button id="bCpu">② CPU(WASM)로 시험</button>
   <label class="btn">③ 내 사진으로 (가운데 띠 지우기)<input type="file" id="pick" accept="image/*" hidden></label>
@@ -36,10 +40,13 @@ textarea{width:100%;height:110px;font:12px monospace;background:var(--bg);color:
   <div style="font-size:13px;margin-bottom:6px">결과 요약 (길게 눌러 복사해서 보내 주세요)</div>
   <textarea id="sum" readonly></textarea>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.all.min.js" crossorigin="anonymous"></script>
 <script>
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
-const MODEL_URL = 'https://huggingface.co/othytenk/lama-int4-int8/resolve/main/lama_int4_int8_r4.onnx';
+const MODELS = {
+  int8: { url: 'https://huggingface.co/othytenk/lama-int4-int8/resolve/main/lama_int4_int8_r4.onnx', mb: 37, scale: 1, qdq: true },
+  dilated: { url: 'https://huggingface.co/pxGeniusAI/lama-dilated/resolve/main/lama_dilated.onnx', mb: 174, scale: 255, qdq: false },
+};
 const $ = s => document.querySelector(s);
 const summary = { ua: navigator.userAgent, isolated: self.crossOriginIsolated, cores: navigator.hardwareConcurrency, runs: [] };
 function log(m) { $('#log').textContent += m + '\n'; $('#log').scrollTop = 1e9; }
@@ -50,7 +57,7 @@ function sum() { $('#sum').value = JSON.stringify(summary); }
   if (!self.crossOriginIsolated && 'serviceWorker' in navigator) {
     try {
       await navigator.serviceWorker.register('sw.js');
-      if (!sessionStorage.getItem('coi-reloaded')) { sessionStorage.setItem('coi-reloaded', '1'); location.reload(); return; }
+      if (!sessionStorage.getItem('coi-reloaded-v2')) { sessionStorage.setItem('coi-reloaded-v2', '1'); location.reload(); return; }
     } catch (e) { log('서비스워커 등록 실패(CPU 1개만 사용): ' + e.message); }
   }
   let gpu = '없음';
@@ -63,21 +70,22 @@ function sum() { $('#sum').value = JSON.stringify(summary); }
   sum();
 })();
 
-let modelBuf = null;
-async function getModel() {
-  if (modelBuf) return modelBuf;
+const modelBufs = {};
+async function getModel(key) {
+  if (modelBufs[key]) return modelBufs[key];
+  const MODEL_URL = MODELS[key].url;
   const t = performance.now();
   let res = null, cache = null;
   try { cache = await caches.open('lama-v1'); res = await cache.match(MODEL_URL); } catch (e) {}
   if (!res) {
-    log('모델 받는 중… (37MB)');
+    log(`모델 받는 중… (${MODELS[key].mb}MB)`);
     res = await fetch(MODEL_URL);
     if (!res.ok) throw new Error('모델 받기 실패 ' + res.status);
     if (cache) { try { await cache.put(MODEL_URL, res.clone()); } catch (e) {} }
   } else log('모델: 기기에 저장된 것 사용');
-  modelBuf = await res.arrayBuffer();
+  modelBufs[key] = await res.arrayBuffer();
   log(`모델 준비 ${((performance.now() - t) / 1000).toFixed(1)}초`);
-  return modelBuf;
+  return modelBufs[key];
 }
 function loadImg(src) { return new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; }); }
 function toPixels(img, crop) {
@@ -101,10 +109,13 @@ async function run(ep, input) {
   const btns = document.querySelectorAll('button'); btns.forEach(b => b.disabled = true);
   try {
     input = input || current || (current = await prepareSample());
-    const buf = await getModel();
-    log(`--- ${ep} 준비 중…`);
+    const key = $('#model').value, M = MODELS[key];
+    const buf = await getModel(key);
+    log(`--- [${key}] ${ep} 준비 중…`);
     let t = performance.now();
-    const sess = await ort.InferenceSession.create(buf, { executionProviders: [ep], extra: { session: { disable_quant_qdq: '1' } } });
+    const opt = { executionProviders: [ep] };
+    if (M.qdq) opt.extra = { session: { disable_quant_qdq: '1' } };
+    const sess = await ort.InferenceSession.create(buf, opt);
     const prep = (performance.now() - t) / 1000;
     log(`${ep} 준비 ${prep.toFixed(1)}초`);
     const N = 512 * 512, img = new Float32Array(3 * N), mask = new Float32Array(N);
@@ -119,21 +130,21 @@ async function run(ep, input) {
     const c = document.createElement('canvas'); c.width = c.height = 512;
     const x = c.getContext('2d'), id = x.createImageData(512, 512);
     for (let i = 0; i < N; i++) {
-      for (let ch = 0; ch < 3; ch++) id.data[i * 4 + ch] = mask[i] > 0 ? Math.max(0, Math.min(255, o[ch * N + i])) : input.px[i * 4 + ch];
+      for (let ch = 0; ch < 3; ch++) id.data[i * 4 + ch] = mask[i] > 0 ? Math.max(0, Math.min(255, o[ch * N + i] * M.scale)) : input.px[i * 4 + ch];
       id.data[i * 4 + 3] = 255;
     }
     x.putImageData(id, 0, 0);
     const row = document.createElement('div'); row.className = 'card';
-    row.innerHTML = `<b>${input.name} · ${ep}</b> — 한 장 ${Math.min(...times.slice(1))}초`;
+    row.innerHTML = `<b>${input.name} · ${key} · ${ep}</b> — 한 장 ${Math.min(...times.slice(1))}초`;
     const g = document.createElement('div'); g.className = 'row';
     const f1 = document.createElement('figure'); const a = input.show.cloneNode ? input.show.cloneNode() : input.show; f1.append(a, '원본');
     const f2 = document.createElement('figure'); f2.append(c, '지운 결과');
     g.append(f1, f2); row.append(g); $('#out').prepend(row);
-    summary.runs.push({ ep, input: input.name, prep: +prep.toFixed(1), times, ok: true });
+    summary.runs.push({ model: key, ep, input: input.name, prep: +prep.toFixed(1), times, ok: true });
     await sess.release();
   } catch (e) {
     log(`${ep} 실패: ${e && e.message ? e.message : e}`);
-    summary.runs.push({ ep, ok: false, error: String(e && e.message ? e.message : e).slice(0, 200) });
+    summary.runs.push({ model: $('#model').value, ep, ok: false, error: String(e && e.message ? e.message : e).slice(0, 200) });
   } finally { btns.forEach(b => b.disabled = false); sum(); }
 }
 $('#bGpu').onclick = () => run('webgpu');

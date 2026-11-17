@@ -4,5 +4,7 @@
 
 사용한 오픈소스
 - LaMa (advimman/lama) — Apache License 2.0
-- 양자화 ONNX 모델: othytenk/lama-int4-int8 (Hugging Face) — Apache License 2.0, 실행 시 Hugging Face에서 내려받음
+- 양자화 ONNX 모델: othytenk/lama-int4-int8 (Hugging Face) — Apache License 2.0
+- LaMa-Dilated ONNX: pxGeniusAI/lama-dilated (Hugging Face, Qualcomm AI Hub 변환본) — BSD-3-Clause
+- 모델은 실행 시 Hugging Face에서 내려받음
 - onnxruntime-web 1.31.1 — MIT License
