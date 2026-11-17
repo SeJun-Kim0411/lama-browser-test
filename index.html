@@ -78,28 +78,44 @@ function sum() { $('#sum').value = JSON.stringify(summary); }
   sum();
 })();
 
-const modelBufs = {};
-async function getModel(key) {
-  if (modelBufs[key]) return modelBufs[key];
-  const MODEL_URL = MODELS[key].url;
+// 사파리는 메모리가 모자라면 페이지를 말없이 다시 연다 -> 어느 단계에서 끊겼는지 기기에 적어 둔다
+const STAGE_KEY = 'lama-stage-v1';
+function stage(s, extra) {
+  try { localStorage.setItem(STAGE_KEY, JSON.stringify(Object.assign({ s, at: Date.now() }, extra || {}))); } catch (e) {}
+}
+function stageDone() { try { localStorage.removeItem(STAGE_KEY); } catch (e) {} }
+try {
+  const last = JSON.parse(localStorage.getItem(STAGE_KEY) || 'null');
+  if (last) {
+    summary.lastCrash = last;
+    log(`⚠ 지난번 시험이 "${last.s}" 단계에서 끊겼어요 (모델 ${last.model} · ${last.ep}). 메모리 부족으로 페이지가 다시 열린 것 같아요.`);
+    stageDone();
+  }
+  const m = localStorage.getItem('lama-model'); if (m && MODELS[m]) $('#model').value = m;
+} catch (e) {}
+$('#model').onchange = () => { try { localStorage.setItem('lama-model', $('#model').value); } catch (e) {} };
+
+// 모델 파일은 Blob(디스크 쪽)으로 들고 있다가 필요할 때만 메모리로 읽는다 (복사본을 줄이려고)
+async function getModel(key, ep) {
+  const M = MODELS[key], MODEL_URL = M.url;
   const t = performance.now();
-  let res = null, cache = null;
-  try { cache = await caches.open('lama-v1'); res = await cache.match(MODEL_URL); } catch (e) {}
-  if (!res) {
-    log(`모델 받는 중… (${MODELS[key].mb}MB)`);
-    if (MODELS[key].parts) {   // GitHub 파일 크기 제한(100MB) 때문에 둘로 나눠 올린 것을 이어 붙임
-      const bufs = [];
-      for (const u of MODELS[key].parts) { const r = await fetch(u); if (!r.ok) throw new Error('모델 받기 실패 ' + r.status); bufs.push(await r.blob()); }
-      res = new Response(new Blob(bufs), { headers: { 'Content-Type': 'application/octet-stream' } });
-    } else {
-      res = await fetch(MODEL_URL);
-      if (!res.ok) throw new Error('모델 받기 실패 ' + res.status);
+  let blob = null, cache = null;
+  try { cache = await caches.open('lama-v1'); const r = await cache.match(MODEL_URL); if (r) blob = await r.blob(); } catch (e) {}
+  if (!blob) {
+    stage('모델 받기', { model: key, ep });
+    log(`모델 받는 중… (${M.mb}MB)`);
+    const parts = [];
+    for (const u of (M.parts || [MODEL_URL])) {   // 고화질은 GitHub 100MB 제한 때문에 둘로 나눠 올림
+      const r = await fetch(u); if (!r.ok) throw new Error('모델 받기 실패 ' + r.status); parts.push(await r.blob());
     }
-    if (cache) { try { await cache.put(MODEL_URL, res.clone()); } catch (e) {} }
+    blob = parts.length > 1 ? new Blob(parts) : parts[0];
+    stage('모델 저장', { model: key, ep });
+    if (cache) { try { await cache.put(MODEL_URL, new Response(blob)); } catch (e) {} }
   } else log('모델: 기기에 저장된 것 사용');
-  modelBufs[key] = await res.arrayBuffer();
+  stage('모델 메모리로 읽기', { model: key, ep });
+  const buf = new Uint8Array(await blob.arrayBuffer());
   log(`모델 준비 ${((performance.now() - t) / 1000).toFixed(1)}초`);
-  return modelBufs[key];
+  return buf;
 }
 function loadImg(src) { return new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; }); }
 function toPixels(img, crop) {
@@ -124,12 +140,14 @@ async function run(ep, input) {
   try {
     input = input || current || (current = await prepareSample());
     const key = $('#model').value, M = MODELS[key];
-    const buf = await getModel(key);
+    let buf = await getModel(key, ep);
     log(`--- [${key}] ${ep} 준비 중…`);
+    stage(ep + ' 준비(세션 만들기)', { model: key, ep });
     let t = performance.now();
     const opt = { executionProviders: [ep] };
     if (M.qdq) opt.extra = { session: { disable_quant_qdq: '1' } };
     const sess = await ort.InferenceSession.create(buf, opt);
+    buf = null;   // 세션이 모델을 가져갔으니 이 복사본은 버림
     const prep = (performance.now() - t) / 1000;
     log(`${ep} 준비 ${prep.toFixed(1)}초`);
     const N = 512 * 512, img = new Float32Array(3 * N), mask = new Float32Array(N);
@@ -139,7 +157,7 @@ async function run(ep, input) {
     }
     const feeds = { image: new ort.Tensor('float32', img, [1, 3, 512, 512]), mask: new ort.Tensor('float32', mask, [1, 1, 512, 512]) };
     const times = []; let out;
-    for (let k = 0; k < 3; k++) { t = performance.now(); out = await sess.run(feeds); times.push(+((performance.now() - t) / 1000).toFixed(2)); log(`${ep} ${k + 1}회째 ${times[k]}초`); }
+    for (let k = 0; k < 3; k++) { stage(`${ep} 계산 ${k + 1}회째`, { model: key, ep }); t = performance.now(); out = await sess.run(feeds); times.push(+((performance.now() - t) / 1000).toFixed(2)); log(`${ep} ${k + 1}회째 ${times[k]}초`); }
     const o = out[sess.outputNames[0]].data;
     const c = document.createElement('canvas'); c.width = c.height = 512;
     const x = c.getContext('2d'), id = x.createImageData(512, 512);
@@ -159,7 +177,7 @@ async function run(ep, input) {
   } catch (e) {
     log(`${ep} 실패: ${e && e.message ? e.message : e}`);
     summary.runs.push({ model: $('#model').value, ep, ok: false, error: String(e && e.message ? e.message : e).slice(0, 200) });
-  } finally { btns.forEach(b => b.disabled = false); sum(); }
+  } finally { stageDone(); btns.forEach(b => b.disabled = false); sum(); }
 }
 $('#bGpu').onclick = () => run('webgpu');
 $('#bCpu').onclick = () => run('wasm');
