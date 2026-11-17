@@ -54,11 +54,18 @@ function sum() { $('#sum').value = JSON.stringify(summary); }
 
 // 여러 CPU 코어를 쓰려면 cross-origin isolation 필요 -> 서비스워커 등록 후 한 번 새로고침
 (async () => {
+  summary.diag = { sw: 'serviceWorker' in navigator, sab: typeof SharedArrayBuffer !== 'undefined' };
   if (!self.crossOriginIsolated && 'serviceWorker' in navigator) {
     try {
-      await navigator.serviceWorker.register('sw.js');
-      if (!sessionStorage.getItem('coi-reloaded-v2')) { sessionStorage.setItem('coi-reloaded-v2', '1'); location.reload(); return; }
-    } catch (e) { log('서비스워커 등록 실패(CPU 1개만 사용): ' + e.message); }
+      const reg = await navigator.serviceWorker.register('sw.js');
+      await reg.update().catch(() => {});
+      await navigator.serviceWorker.ready;           // 새 서비스워커가 켜질 때까지 기다림
+      summary.diag.controlled = !!navigator.serviceWorker.controller;
+      const n = +(sessionStorage.getItem('coi-reloads-v3') || 0);
+      summary.diag.reloads = n;
+      if (n < 2) { sessionStorage.setItem('coi-reloads-v3', String(n + 1)); location.reload(); return; }
+      log('여러 코어 쓰기를 켜지 못했어요 (이 브라우저는 CPU 1개만 사용)');
+    } catch (e) { summary.diag.err = String(e.message || e); log('서비스워커 등록 실패(CPU 1개만 사용): ' + e.message); }
   }
   let gpu = '없음';
   try { if (navigator.gpu) { const a = await navigator.gpu.requestAdapter(); gpu = a ? ((a.info && (a.info.vendor + ' ' + a.info.architecture + ' ' + (a.info.description || ''))) || '있음') : '어댑터 없음'; } } catch (e) { gpu = '오류 ' + e.message; }
