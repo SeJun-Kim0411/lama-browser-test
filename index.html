@@ -27,8 +27,8 @@ textarea{width:100%;height:110px;font:12px monospace;background:var(--bg);color:
 <p>이 기기에서 AI 채우기(LaMa)가 얼마나 빠른지 재요. 처음 한 번 모델을 받아요(와이파이 권장). 사진은 기기 밖으로 보내지 않아요.</p>
 <div class="card">
   <label style="display:block;margin-bottom:8px">모델 <select id="model" style="font:inherit;padding:6px;border-radius:8px">
-    <option value="dilated">브라우저 그래픽용 LaMa (174MB)</option>
-    <option value="int8">줄인 LaMa (37MB)</option>
+    <option value="int8" selected>줄인 LaMa (37MB) — 화질 원본급</option>
+    <option value="dilated">그래픽용 LaMa-Dilated (174MB) — 빠르지만 화질 낮음</option>
   </select></label>
   <button class="primary" id="bGpu">① 그래픽(WebGPU)로 시험</button>
   <button id="bCpu">② CPU(WASM)로 시험</button>
